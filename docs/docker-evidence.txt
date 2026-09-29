@@ -1,0 +1,127 @@
+Evidencia de contenedores - virtualization-lab
+Fecha: 2026-09-29 18:30:48 HPS
+Docker: Docker version 29.5.2, build 79eb04c
+Compose: Docker Compose version v5.1.4
+
+==================================================================
+1. EJECUCION LOCAL SIN CONTENEDOR
+==================================================================
+$ mvn clean package
+Tests run: 4, Failures: 0, Errors: 0, Skipped: 0
+BUILD SUCCESS
+
+$ java -jar target/virtualization-lab.jar
+Tomcat started on port 9000 (http) with context path '/'
+Started RestServiceApplication in 1.827 seconds
+
+$ curl 'http://localhost:9000/greeting?name=Pedro'
+Hello, Pedro!
+$ curl 'http://localhost:9000/whoami'
+{"java":"25.0.2","port":"9000","host":"DESKTOP-L8J68VS"}
+   (el host responde con el Java 25 de la maquina)
+
+==================================================================
+2. IMAGEN DE DOCKER
+==================================================================
+$ docker build -t brandoeci/virtualization-lab:1.0 .
+$ docker images brandoeci/virtualization-lab
+IMAGE                              ID             DISK USAGE   CONTENT SIZE   EXTRA
+brandoeci/virtualization-lab:1.0   8e3575e55a5a        771MB          243MB   U    
+
+$ docker image inspect brandoeci/virtualization-lab:1.0 --format '{{.Config.Env}} {{.Config.Entrypoint}}'
+[PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin LANG=C.UTF-8 JAVA_HOME=/usr/lib/jvm/java-21-amazon-corretto PORT=9000] [java -jar app.jar]
+
+==================================================================
+3. TRES CONTENEDORES AISLADOS DE LA MISMA IMAGEN
+==================================================================
+$ docker run -d --name virtualization-lab-1 -e PORT=9000 -p 34000:9000 brandoeci/virtualization-lab:1.0
+$ docker run -d --name virtualization-lab-2 -p 34001:9000 brandoeci/virtualization-lab:1.0
+$ docker run -d --name virtualization-lab-3 -p 34002:9000 brandoeci/virtualization-lab:1.0
+
+$ docker ps
+NAMES                  IMAGE                              STATUS         PORTS
+virtualization-lab-3   brandoeci/virtualization-lab:1.0   Up 9 minutes   0.0.0.0:34002->9000/tcp, [::]:34002->9000/tcp
+virtualization-lab-2   brandoeci/virtualization-lab:1.0   Up 9 minutes   0.0.0.0:34001->9000/tcp, [::]:34001->9000/tcp
+virtualization-lab-1   brandoeci/virtualization-lab:1.0   Up 9 minutes   0.0.0.0:34000->9000/tcp, [::]:34000->9000/tcp
+
+$ curl 'http://localhost:34000/greeting?name=Container34000'
+   Hello, Container34000!
+$ curl 'http://localhost:34000/whoami'
+   {"java":"21.0.12.1","port":"9000","host":"4e3ccbacf1fd"}
+$ curl 'http://localhost:34001/greeting?name=Container34001'
+   Hello, Container34001!
+$ curl 'http://localhost:34001/whoami'
+   {"port":"9000","host":"f5e1159d756f","java":"21.0.12.1"}
+$ curl 'http://localhost:34002/greeting?name=Container34002'
+   Hello, Container34002!
+$ curl 'http://localhost:34002/whoami'
+   {"java":"21.0.12.1","port":"9000","host":"9478bb04df4c"}
+
+   Cada contenedor responde con un host distinto (su propio id) y con
+   Java 21 adentro, aunque la maquina tenga Java 25: la imagen lleva su
+   propio runtime. Los tres corren la misma imagen, aislados entre si.
+
+==================================================================
+4. ENTORNO MULTI-CONTENEDOR CON DOCKER COMPOSE
+==================================================================
+$ docker compose up -d --build
+$ docker compose ps
+NAME                 IMAGE                    COMMAND                  SERVICE   CREATED         STATUS         PORTS
+virtualization-db    mongo:8                  "docker-entrypoint.s…"   db        4 minutes ago   Up 4 minutes   0.0.0.0:27017->27017/tcp, [::]:27017->27017/tcp
+virtualization-web   virtualization-lab-web   "java -jar app.jar"      web       4 minutes ago   Up 4 minutes   0.0.0.0:8087->9000/tcp, [::]:8087->9000/tcp
+
+$ curl 'http://localhost:8087/greeting?name=Compose'
+   Hello, Compose!
+
+$ docker compose exec web sh -c 'echo $SPRING_DATA_MONGODB_URI; getent hosts db'
+   SPRING_DATA_MONGODB_URI=mongodb://db:27017/workshop
+   dns del servicio db -> 172.21.0.2      db
+   (la aplicacion alcanza la base por el nombre del servicio, db, en la
+    red que Compose creo sola)
+
+$ docker compose logs web | tail -4
+   virtualization-web  | 2026-09-29T23:27:57.562Z  INFO 1 --- [           main] c.e.e.v.RestServiceApplication           : Started RestServiceApplication in 28.781 seconds (process running for 33.941)
+   virtualization-web  | 2026-09-29T23:28:36.288Z  INFO 1 --- [nio-9000-exec-1] o.a.c.c.C.[Tomcat].[localhost].[/]       : Initializing Spring DispatcherServlet 'dispatcherServlet'
+   virtualization-web  | 2026-09-29T23:28:36.293Z  INFO 1 --- [nio-9000-exec-1] o.s.web.servlet.DispatcherServlet        : Initializing Servlet 'dispatcherServlet'
+   virtualization-web  | 2026-09-29T23:28:36.310Z  INFO 1 --- [nio-9000-exec-1] o.s.web.servlet.DispatcherServlet        : Completed initialization in 17 ms
+
+$ docker compose logs db | tail -2
+   virtualization-db  | {"t":{"$date":"2026-09-29T23:30:05.320+00:00"},"s":"I",  "c":"WTCHKPT",  "id":22430,   "ctx":"Checkpointer","msg":"Wire
+   virtualization-db  | {"t":{"$date":"2026-09-29T23:31:10.351+00:00"},"s":"I",  "c":"WTCHKPT",  "id":22430,   "ctx":"Checkpointer","msg":"Wire
+
+$ docker compose exec db mongosh
+   > use workshop
+   > db.messages.insertOne({ message: "Hello from Docker Compose" })
+   > db.messages.find()
+   [
+     {
+       _id: ObjectId('6abc49af236a414407c4bdf0'),
+       message: 'Hello from Docker Compose'
+     }
+   ]
+
+==================================================================
+5. LOS VOLUMENES SOBREVIVEN A LOS CONTENEDORES
+==================================================================
+$ docker volume ls | grep virtualization
+   local     virtualization-lab_mongodb
+   local     virtualization-lab_mongodb_config
+
+$ docker compose down        (borra los contenedores, deja los volumenes)
+    Container virtualization-db Removed 
+    Network virtualization-lab_default Removing 
+    Network virtualization-lab_default Removed 
+
+$ docker compose up -d       (se levanta de nuevo)
+    Container virtualization-web Starting 
+    Container virtualization-web Started 
+
+$ docker compose exec db mongosh --eval 'db.messages.find()'
+   [
+     {
+       _id: ObjectId('6abc49af236a414407c4bdf0'),
+       message: 'Hello from Docker Compose'
+     }
+   ]
+   El documento sigue ahi: los datos viven en el volumen mongodb, no en
+   el contenedor. Con 'docker compose down -v' si se borrarian.
